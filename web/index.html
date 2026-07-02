@@ -329,6 +329,8 @@
       let statusCharacteristic = null;
       let jogTimer = null;
       let activeJogDirection = 0;
+      let configDirty = false;
+      let applyingConfig = false;
 
       const $ = (id) => document.getElementById(id);
       const commandButtons = [
@@ -365,6 +367,12 @@
         return Math.max(1, Math.min(50000, Number($('accel').value || 1)));
       }
 
+      function markConfigDirty() {
+        if (!applyingConfig) {
+          configDirty = true;
+        }
+      }
+
       async function sendJog() {
         if (!activeJogDirection) {
           return;
@@ -395,10 +403,27 @@
         $('run').textContent = status.running ? 'RUNNING' : 'STOPPED';
         $('dir').textContent = status.direction ?? '-';
         $('speed').textContent = status.speedHz ?? '-';
-        $('microstep').value = status.microstep ?? $('microstep').value;
-        $('dValue').value = status.d ?? $('dValue').value;
-        $('steps').value = status.stepCount ?? $('steps').value;
-        $('accel').value = status.acceleration ?? $('accel').value;
+
+        if (applyingConfig) {
+          const applied =
+            Number($('microstep').value) === Number(status.microstep) &&
+            Number($('dValue').value) === Number(status.d) &&
+            Number($('steps').value) === Number(status.stepCount) &&
+            Number($('accel').value) === Number(status.acceleration);
+
+          if (applied) {
+            applyingConfig = false;
+            configDirty = false;
+            setMessage('設定を適用しました。');
+          }
+        }
+
+        if (!configDirty && !applyingConfig) {
+          $('microstep').value = status.microstep ?? $('microstep').value;
+          $('dValue').value = status.d ?? $('dValue').value;
+          $('steps').value = status.stepCount ?? $('steps').value;
+          $('accel').value = status.acceleration ?? $('accel').value;
+        }
       }
 
       function handleStatus(event) {
@@ -431,6 +456,8 @@
 
         const initial = await statusCharacteristic.readValue();
         updateStatus(JSON.parse(decoder.decode(initial)));
+        configDirty = false;
+        applyingConfig = false;
         setConnected(true);
         setMessage('BLE接続しました。');
       }
@@ -478,7 +505,11 @@
         const ms = Number($('microstep').value);
         const d = Math.max(100, Number($('dValue').value || 100));
         const steps = Math.max(1, Number($('steps').value || 1));
-        writeCommand(`C,${ms},${d},${steps},${currentAccel()}`).catch(console.error);
+        applyingConfig = true;
+        writeCommand(`C,${ms},${d},${steps},${currentAccel()}`).catch((error) => {
+          applyingConfig = false;
+          setMessage(error.message);
+        });
       });
       $('enableButton').addEventListener('click', () => writeCommand('E,1').catch(console.error));
       $('disableButton').addEventListener('click', () => writeCommand('E,0').catch(console.error));
@@ -489,6 +520,11 @@
       $('jogSpeed').addEventListener('input', () => {
         $('jogSpeedLabel').textContent = $('jogSpeed').value;
         sendJog().catch(console.error);
+      });
+
+      ['microstep', 'dValue', 'steps', 'accel'].forEach((id) => {
+        $(id).addEventListener('input', markConfigDirty);
+        $(id).addEventListener('change', markConfigDirty);
       });
 
       bindHoldButton('ccwJog', -1);
