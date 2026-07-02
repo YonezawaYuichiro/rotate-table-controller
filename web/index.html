@@ -1,0 +1,499 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>XIAO BLE Motor Controller</title>
+    <style>
+      :root {
+        color-scheme: light;
+        --bg: #f4f6f8;
+        --panel: #ffffff;
+        --line: #d7dde4;
+        --text: #17202a;
+        --muted: #687382;
+        --accent: #0f766e;
+        --danger: #b42318;
+        --button: #233142;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        background: var(--bg);
+        color: var(--text);
+        font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      }
+
+      main {
+        width: min(980px, calc(100% - 28px));
+        margin: 0 auto;
+        padding: 22px 0 34px;
+      }
+
+      header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        margin-bottom: 16px;
+      }
+
+      h1 {
+        margin: 0;
+        font-size: clamp(22px, 4vw, 34px);
+        font-weight: 750;
+      }
+
+      .status-pill {
+        border: 1px solid var(--line);
+        border-radius: 999px;
+        padding: 8px 12px;
+        background: var(--panel);
+        color: var(--muted);
+        white-space: nowrap;
+      }
+
+      .status-pill.connected {
+        color: var(--accent);
+        border-color: color-mix(in srgb, var(--accent), white 45%);
+      }
+
+      .grid {
+        display: grid;
+        grid-template-columns: repeat(12, 1fr);
+        gap: 12px;
+      }
+
+      section {
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: var(--panel);
+        padding: 14px;
+      }
+
+      .span-12 {
+        grid-column: span 12;
+      }
+
+      .span-7 {
+        grid-column: span 7;
+      }
+
+      .span-5 {
+        grid-column: span 5;
+      }
+
+      h2 {
+        margin: 0 0 12px;
+        font-size: 16px;
+      }
+
+      .metrics {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: 8px;
+      }
+
+      .metric {
+        border: 1px solid var(--line);
+        border-radius: 6px;
+        padding: 10px;
+        min-height: 72px;
+      }
+
+      .metric span {
+        display: block;
+        color: var(--muted);
+        font-size: 12px;
+      }
+
+      .metric strong {
+        display: block;
+        margin-top: 6px;
+        font-size: 20px;
+        overflow-wrap: anywhere;
+      }
+
+      .form-grid {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 12px;
+      }
+
+      label {
+        display: grid;
+        gap: 6px;
+        color: var(--muted);
+        font-size: 13px;
+      }
+
+      input,
+      select {
+        width: 100%;
+        border: 1px solid var(--line);
+        border-radius: 6px;
+        padding: 10px;
+        color: var(--text);
+        background: #fff;
+        font: inherit;
+      }
+
+      input[type="range"] {
+        padding: 0;
+      }
+
+      button {
+        min-height: 42px;
+        border: 0;
+        border-radius: 6px;
+        padding: 10px 14px;
+        background: var(--button);
+        color: #fff;
+        font: inherit;
+        font-weight: 650;
+        cursor: pointer;
+      }
+
+      button:disabled {
+        cursor: not-allowed;
+        opacity: 0.46;
+      }
+
+      button.secondary {
+        background: #e8edf2;
+        color: var(--text);
+      }
+
+      button.accent {
+        background: var(--accent);
+      }
+
+      button.danger {
+        background: var(--danger);
+      }
+
+      .button-row {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 8px;
+        margin-top: 12px;
+      }
+
+      .jog-pad {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 10px;
+      }
+
+      .jog-pad button {
+        min-height: 86px;
+        font-size: 22px;
+      }
+
+      .full {
+        grid-column: 1 / -1;
+      }
+
+      .message {
+        min-height: 22px;
+        margin-top: 10px;
+        color: var(--muted);
+        font-size: 13px;
+      }
+
+      @media (max-width: 760px) {
+        header {
+          align-items: flex-start;
+          flex-direction: column;
+        }
+
+        .span-7,
+        .span-5 {
+          grid-column: span 12;
+        }
+
+        .metrics,
+        .form-grid,
+        .button-row {
+          grid-template-columns: 1fr 1fr;
+        }
+      }
+
+      @media (max-width: 520px) {
+        .metrics,
+        .form-grid,
+        .button-row,
+        .jog-pad {
+          grid-template-columns: 1fr;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <header>
+        <h1>XIAO BLE Motor Controller</h1>
+        <div id="connectionState" class="status-pill">未接続</div>
+      </header>
+
+      <div class="grid">
+        <section class="span-12">
+          <div class="button-row">
+            <button id="connectButton" class="accent">BLE接続</button>
+            <button id="disconnectButton" class="secondary" disabled>切断</button>
+            <button id="stopButton" class="danger" disabled>緊急停止</button>
+          </div>
+          <div id="message" class="message"></div>
+        </section>
+
+        <section class="span-12">
+          <h2>状態</h2>
+          <div class="metrics">
+            <div class="metric"><span>位置</span><strong id="pos">-</strong></div>
+            <div class="metric"><span>動作</span><strong id="run">-</strong></div>
+            <div class="metric"><span>方向</span><strong id="dir">-</strong></div>
+            <div class="metric"><span>速度 steps/s</span><strong id="speed">-</strong></div>
+          </div>
+        </section>
+
+        <section class="span-7">
+          <h2>ジョグ</h2>
+          <div class="form-grid">
+            <label class="full">
+              速度: <span><strong id="jogSpeedLabel">500</strong> steps/s</span>
+              <input id="jogSpeed" type="range" min="1" max="5000" value="500" step="1">
+            </label>
+            <label>
+              加速度
+              <input id="accel" type="number" min="1" max="50000" value="400">
+            </label>
+            <label>
+              指定移動ステップ
+              <input id="steps" type="number" min="1" value="3200">
+            </label>
+          </div>
+          <div class="jog-pad" style="margin-top:12px">
+            <button id="ccwJog" disabled>CCW</button>
+            <button id="cwJog" disabled>CW</button>
+          </div>
+          <div class="button-row">
+            <button id="moveCcwButton" disabled>指定移動 CCW</button>
+            <button id="singleButton" disabled>1ステップ CW</button>
+            <button id="moveCwButton" disabled>指定移動 CW</button>
+          </div>
+        </section>
+
+        <section class="span-5">
+          <h2>設定</h2>
+          <div class="form-grid">
+            <label>
+              マイクロステップ
+              <select id="microstep">
+                <option value="1">1/1</option>
+                <option value="2">1/2</option>
+                <option value="4">1/4</option>
+                <option value="8" selected>1/8</option>
+                <option value="16">1/16</option>
+              </select>
+            </label>
+            <label>
+              d (us)
+              <input id="dValue" type="number" min="100" max="1000000" value="3000">
+            </label>
+          </div>
+          <div class="button-row">
+            <button id="applyButton" disabled>設定適用</button>
+            <button id="enableButton" disabled>励磁ON</button>
+            <button id="disableButton" class="secondary" disabled>励磁OFF</button>
+          </div>
+          <div class="button-row">
+            <button id="resetButton" class="secondary" disabled>位置リセット</button>
+          </div>
+        </section>
+      </div>
+    </main>
+
+    <script>
+      const SERVICE_UUID = '7b7f0001-9b6d-4f8b-8c5d-9bb6f6f68c01';
+      const COMMAND_UUID = '7b7f0002-9b6d-4f8b-8c5d-9bb6f6f68c01';
+      const STATUS_UUID = '7b7f0003-9b6d-4f8b-8c5d-9bb6f6f68c01';
+
+      const encoder = new TextEncoder();
+      const decoder = new TextDecoder();
+      let device = null;
+      let commandCharacteristic = null;
+      let statusCharacteristic = null;
+      let jogTimer = null;
+      let activeJogDirection = 0;
+
+      const $ = (id) => document.getElementById(id);
+      const commandButtons = [
+        'stopButton', 'ccwJog', 'cwJog', 'moveCcwButton', 'singleButton', 'moveCwButton',
+        'applyButton', 'enableButton', 'disableButton', 'resetButton'
+      ];
+
+      function setMessage(text) {
+        $('message').textContent = text;
+      }
+
+      function setConnected(connected) {
+        $('connectionState').textContent = connected ? '接続中' : '未接続';
+        $('connectionState').classList.toggle('connected', connected);
+        $('connectButton').disabled = connected;
+        $('disconnectButton').disabled = !connected;
+        commandButtons.forEach((id) => $(id).disabled = !connected);
+      }
+
+      async function writeCommand(command) {
+        if (!commandCharacteristic) {
+          return;
+        }
+
+        const payload = encoder.encode(command);
+        if (commandCharacteristic.writeValueWithoutResponse) {
+          await commandCharacteristic.writeValueWithoutResponse(payload);
+        } else {
+          await commandCharacteristic.writeValue(payload);
+        }
+      }
+
+      function currentAccel() {
+        return Math.max(1, Math.min(50000, Number($('accel').value || 1)));
+      }
+
+      async function sendJog() {
+        if (!activeJogDirection) {
+          return;
+        }
+        const speed = Math.max(1, Math.min(5000, Number($('jogSpeed').value || 1)));
+        await writeCommand(`V,${speed * activeJogDirection},${currentAccel()}`);
+      }
+
+      async function stopJog() {
+        activeJogDirection = 0;
+        if (jogTimer) {
+          clearInterval(jogTimer);
+          jogTimer = null;
+        }
+        await writeCommand(`V,0,${currentAccel()}`);
+      }
+
+      async function startJog(direction) {
+        activeJogDirection = direction;
+        await sendJog();
+        if (!jogTimer) {
+          jogTimer = setInterval(() => sendJog().catch(console.error), 100);
+        }
+      }
+
+      function updateStatus(status) {
+        $('pos').textContent = status.position ?? '-';
+        $('run').textContent = status.running ? 'RUNNING' : 'STOPPED';
+        $('dir').textContent = status.direction ?? '-';
+        $('speed').textContent = status.speedHz ?? '-';
+        $('microstep').value = status.microstep ?? $('microstep').value;
+        $('dValue').value = status.d ?? $('dValue').value;
+        $('steps').value = status.stepCount ?? $('steps').value;
+        $('accel').value = status.acceleration ?? $('accel').value;
+      }
+
+      function handleStatus(event) {
+        try {
+          const text = decoder.decode(event.target.value);
+          updateStatus(JSON.parse(text));
+        } catch (error) {
+          console.error(error);
+        }
+      }
+
+      async function connectBle() {
+        if (!navigator.bluetooth) {
+          setMessage('このブラウザはWeb Bluetoothに対応していません。ChromeまたはEdgeを使用してください。');
+          return;
+        }
+
+        device = await navigator.bluetooth.requestDevice({
+          filters: [{ namePrefix: 'XIAO BLE Motor' }],
+          optionalServices: [SERVICE_UUID]
+        });
+        device.addEventListener('gattserverdisconnected', onDisconnected);
+
+        const server = await device.gatt.connect();
+        const service = await server.getPrimaryService(SERVICE_UUID);
+        commandCharacteristic = await service.getCharacteristic(COMMAND_UUID);
+        statusCharacteristic = await service.getCharacteristic(STATUS_UUID);
+        statusCharacteristic.addEventListener('characteristicvaluechanged', handleStatus);
+        await statusCharacteristic.startNotifications();
+
+        const initial = await statusCharacteristic.readValue();
+        updateStatus(JSON.parse(decoder.decode(initial)));
+        setConnected(true);
+        setMessage('BLE接続しました。');
+      }
+
+      function onDisconnected() {
+        stopJog().catch(() => {});
+        commandCharacteristic = null;
+        statusCharacteristic = null;
+        setConnected(false);
+        setMessage('BLE接続が切断されました。');
+      }
+
+      async function disconnectBle() {
+        await stopJog();
+        if (device?.gatt?.connected) {
+          device.gatt.disconnect();
+        } else {
+          onDisconnected();
+        }
+      }
+
+      function bindHoldButton(id, direction) {
+        const button = $(id);
+        const start = (event) => {
+          event.preventDefault();
+          startJog(direction).catch(console.error);
+        };
+        const stop = (event) => {
+          event.preventDefault();
+          stopJog().catch(console.error);
+        };
+        button.addEventListener('pointerdown', start);
+        button.addEventListener('pointerup', stop);
+        button.addEventListener('pointercancel', stop);
+        button.addEventListener('pointerleave', stop);
+      }
+
+      $('connectButton').addEventListener('click', () => connectBle().catch((error) => setMessage(error.message)));
+      $('disconnectButton').addEventListener('click', () => disconnectBle().catch(console.error));
+      $('stopButton').addEventListener('click', async () => {
+        await stopJog();
+        await writeCommand('S');
+      });
+      $('applyButton').addEventListener('click', () => {
+        const ms = Number($('microstep').value);
+        const d = Math.max(100, Number($('dValue').value || 100));
+        const steps = Math.max(1, Number($('steps').value || 1));
+        writeCommand(`C,${ms},${d},${steps},${currentAccel()}`).catch(console.error);
+      });
+      $('enableButton').addEventListener('click', () => writeCommand('E,1').catch(console.error));
+      $('disableButton').addEventListener('click', () => writeCommand('E,0').catch(console.error));
+      $('resetButton').addEventListener('click', () => writeCommand('R').catch(console.error));
+      $('moveCcwButton').addEventListener('click', () => writeCommand(`M,-${Math.max(1, Number($('steps').value || 1))}`).catch(console.error));
+      $('moveCwButton').addEventListener('click', () => writeCommand(`M,${Math.max(1, Number($('steps').value || 1))}`).catch(console.error));
+      $('singleButton').addEventListener('click', () => writeCommand('M,1').catch(console.error));
+      $('jogSpeed').addEventListener('input', () => {
+        $('jogSpeedLabel').textContent = $('jogSpeed').value;
+        sendJog().catch(console.error);
+      });
+
+      bindHoldButton('ccwJog', -1);
+      bindHoldButton('cwJog', 1);
+      setConnected(false);
+    </script>
+  </body>
+</html>
