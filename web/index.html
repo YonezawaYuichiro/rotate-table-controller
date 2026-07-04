@@ -329,6 +329,9 @@
       let configDirty = false;
       let applyingConfig = false;
       let lastRealtimeSample = null;
+      let realtimeSpeedSamples = [];
+
+      const REALTIME_SPEED_SAMPLE_COUNT = 10;
 
       const $ = (id) => document.getElementById(id);
       const commandButtons = [
@@ -425,11 +428,17 @@
         const now = performance.now();
 
         if (!Number.isFinite(position) || !Number.isFinite(microstep)) {
-          lastRealtimeSample = null;
+          resetRealtimeSpeed();
           return '-';
         }
 
         if (!lastRealtimeSample) {
+          lastRealtimeSample = { position, microstep, time: now };
+          return '-';
+        }
+
+        if (lastRealtimeSample.microstep !== microstep) {
+          resetRealtimeSpeed();
           lastRealtimeSample = { position, microstep, time: now };
           return '-';
         }
@@ -442,7 +451,20 @@
           return '-';
         }
 
-        const degreesPerSecond = (deltaMicrosteps / microstep) * 1.8 / elapsedSeconds;
+        realtimeSpeedSamples.push({ deltaMicrosteps, elapsedSeconds, microstep });
+        if (realtimeSpeedSamples.length > REALTIME_SPEED_SAMPLE_COUNT) {
+          realtimeSpeedSamples.shift();
+        }
+
+        const totalMicrosteps = realtimeSpeedSamples.reduce((sum, sample) => sum + sample.deltaMicrosteps, 0);
+        const totalSeconds = realtimeSpeedSamples.reduce((sum, sample) => sum + sample.elapsedSeconds, 0);
+        const averageMicrostep = realtimeSpeedSamples.reduce((sum, sample) => sum + sample.microstep, 0) / realtimeSpeedSamples.length;
+
+        if (totalSeconds <= 0 || !Number.isFinite(averageMicrostep)) {
+          return '-';
+        }
+
+        const degreesPerSecond = (totalMicrosteps / averageMicrostep) * 1.8 / totalSeconds;
         const rpm = degreesPerSecond / 360 * 60;
 
         if (Math.abs(rpm) < 0.005) {
@@ -450,6 +472,12 @@
         }
 
         return `${Math.round(rpm)} rpm`;
+      }
+
+      function resetRealtimeSpeed() {
+        lastRealtimeSample = null;
+        realtimeSpeedSamples = [];
+        $('liveSpeed').textContent = '-';
       }
 
       async function sendJog() {
@@ -494,6 +522,7 @@
           if (applied) {
             applyingConfig = false;
             configDirty = false;
+            resetRealtimeSpeed();
             setMessage('設定を適用しました。');
           }
         }
@@ -538,7 +567,7 @@
         updateStatus(JSON.parse(decoder.decode(initial)));
         configDirty = false;
         applyingConfig = false;
-        lastRealtimeSample = null;
+        resetRealtimeSpeed();
         setConnected(true);
         setMessage('BLE接続しました。');
       }
@@ -547,7 +576,7 @@
         stopJog().catch(() => {});
         commandCharacteristic = null;
         statusCharacteristic = null;
-        lastRealtimeSample = null;
+        resetRealtimeSpeed();
         setConnected(false);
         setMessage('BLE接続が切断されました。');
       }
@@ -585,6 +614,7 @@
       });
       $('applyButton').addEventListener('click', () => {
         applyingConfig = true;
+        resetRealtimeSpeed();
         sendConfig().catch((error) => {
           applyingConfig = false;
           setMessage(error.message);
@@ -593,7 +623,7 @@
       $('enableButton').addEventListener('click', () => writeCommand('E,1').catch(console.error));
       $('disableButton').addEventListener('click', () => writeCommand('E,0').catch(console.error));
       $('resetButton').addEventListener('click', () => {
-        lastRealtimeSample = null;
+        resetRealtimeSpeed();
         writeCommand('R').catch(console.error);
       });
       $('moveCcwButton').addEventListener('click', async () => {
