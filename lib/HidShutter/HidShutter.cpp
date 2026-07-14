@@ -61,14 +61,24 @@ void HidShutter::begin(BLEServer* server) {
   m_hid = new BLEHIDDevice(server);
   m_input = m_hid->inputReport(MEDIA_KEYS_ID);
 
-  m_hid->manufacturer("Hutzper");
+  // manufacturer(std::string) は既存の characteristic に setValue するだけで
+  // 生成しない。先に引数なし版で characteristic を作ってから値を入れる
+  // （そうしないと未初期化ポインタ参照で起動時にクラッシュする）。
+  m_hid->manufacturer()->setValue("Hutzper");
   // iOS に受け入れられやすいよう Apple 系の VID/PID を名乗る（BleKeyboard と同値）
   m_hid->pnp(0x02, 0x05ac, 0x820a, 0x0210);
   m_hid->hidInfo(0x00, 0x01);
 
-  // HID over BLE は iOS ではボンディング必須
+  // HID over BLE は iOS ではボンディング必須。
+  // シャッターは表示もキー入力も無いので Just Works（MITMなし・IOなし）。
+  // ID鍵(IRK)も配布して iOS が private address を解決できるようにする。
+  // これを配布しないと再接続のたびに別デバイス扱いになり、iOSの
+  // Bluetooth一覧に同名が複数出て、切断後に再接続できなくなる。
   BLESecurity* security = new BLESecurity();
-  security->setAuthenticationMode(ESP_LE_AUTH_REQ_SC_MITM_BOND);
+  security->setAuthenticationMode(ESP_LE_AUTH_REQ_SC_BOND);
+  security->setCapability(ESP_IO_CAP_NONE);
+  security->setInitEncryptionKey(ESP_BLE_ENC_KEY_MASK | ESP_BLE_ID_KEY_MASK);
+  security->setRespEncryptionKey(ESP_BLE_ENC_KEY_MASK | ESP_BLE_ID_KEY_MASK);
 
   m_hid->reportMap(const_cast<uint8_t*>(HID_REPORT_MAP), sizeof(HID_REPORT_MAP));
   m_hid->startServices();

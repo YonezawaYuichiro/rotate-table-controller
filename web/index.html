@@ -294,6 +294,9 @@
             <button id="autoStartButton" class="accent" disabled>自動撮影スタート</button>
             <button id="autoStopButton" class="danger" disabled>自動撮影ストップ</button>
           </div>
+          <div class="button-row cols-1">
+            <button id="shutterTestButton" disabled>シャッターテスト（音量+を1回送信）</button>
+          </div>
           <p class="hint">
             「回す→止まる→settle待ち→シャッター→post待ち」を分割数ぶん繰り返し、1周で終了します。
             settle=振動が収まるまでの待ち、post=撮影・保存が終わるまでの待ちです。
@@ -379,7 +382,7 @@
       const commandButtons = [
         'stopButton', 'ccwJog', 'cwJog', 'moveCcwButton', 'singleButton', 'moveCwButton',
         'applyButton', 'enableButton', 'disableButton', 'resetButton',
-        'autoStartButton', 'autoStopButton'
+        'autoStartButton', 'autoStopButton', 'shutterTestButton'
       ];
 
       function setMessage(text) {
@@ -631,6 +634,7 @@
         }
       });
       $('autoStopButton').addEventListener('click', () => writeCommand('S').catch(console.error));
+      $('shutterTestButton').addEventListener('click', () => writeCommand('P').catch(console.error));
 
       $('applyButton').addEventListener('click', () => {
         applyingConfig = true;

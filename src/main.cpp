@@ -364,6 +364,13 @@ void handleCommand(String command) {
       stepper->forceStop();
       break;
     }
+    case 'P': {
+      // 単発シャッターテスト：音量+を押して離す（切り分け用）
+      shutter.pressVolumeUp();
+      delay(SHUTTER_HOLD_MS);
+      shutter.release();
+      break;
+    }
     case 'E': {
       motorEnabled = readCsvInt(command, 1, 1) != 0;
       if (motorEnabled) {
