@@ -541,6 +541,7 @@
           if (applied) {
             applyingConfig = false;
             configDirty = false;
+            resetRealtimeSpeed();
             setMessage('設定を適用しました。');
           }
         }
@@ -633,6 +634,7 @@
 
       $('applyButton').addEventListener('click', () => {
         applyingConfig = true;
+        resetRealtimeSpeed();
         sendConfig().catch((error) => {
           applyingConfig = false;
           setMessage(error.message);
