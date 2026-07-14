@@ -4,6 +4,9 @@
 #include <BLEServer.h>
 #include <BLEUtils.h>
 #include <FastAccelStepper.h>
+#include <math.h>
+
+#include "HidShutter.h"
 
 namespace {
 
@@ -26,16 +29,15 @@ namespace {
 #error "MOTOR_PIN_EN is not defined. Set board-specific motor pins in platformio.ini."
 #endif
 
+// iPhone の Bluetooth 設定に「キーボード」として現れる名前。
+// 制御は USB シリアルで行い、BLE は iPhone へのシャッター送信(HID)専用。
 #if defined(MOTOR_BOARD_XIAO_ESP32S3)
-constexpr char DEVICE_NAME[] = "XIAO BLE Motor";
+constexpr char DEVICE_NAME[] = "XIAO Turntable";
 #elif defined(MOTOR_BOARD_ESP32DEV)
-constexpr char DEVICE_NAME[] = "ESP32 BLE Motor";
+constexpr char DEVICE_NAME[] = "ESP32 Turntable";
 #else
-constexpr char DEVICE_NAME[] = "BLE Motor Controller";
+constexpr char DEVICE_NAME[] = "Turntable Shutter";
 #endif
-constexpr char SERVICE_UUID[] = "7b7f0001-9b6d-4f8b-8c5d-9bb6f6f68c01";
-constexpr char COMMAND_UUID[] = "7b7f0002-9b6d-4f8b-8c5d-9bb6f6f68c01";
-constexpr char STATUS_UUID[] = "7b7f0003-9b6d-4f8b-8c5d-9bb6f6f68c01";
 
 constexpr int DIR = MOTOR_PIN_DIR;
 constexpr int STEP = MOTOR_PIN_STEP;
@@ -57,12 +59,34 @@ int acceleration = 400;
 bool motorEnabled = true;
 int32_t jogSpeedHz = 0;
 
-bool bleConnected = false;
 uint32_t lastStatusMs = 0;
 
 FastAccelStepperEngine engine;
 FastAccelStepper* stepper = nullptr;
-BLECharacteristic* statusCharacteristic = nullptr;
+HidShutter shutter;
+
+// ---- 自動撮影ステートマシン --------------------------------------------
+// 1周を autoFrames 分割し、各角度で「止まる→揺れが収まるまで待つ→
+// シャッター→撮影完了待ち→次角度」を BLE を止めずに（非ブロッキングで）回す。
+enum AutoPhase {
+  AP_IDLE,    // 停止中
+  AP_SETTLE,  // 停止位置で振動が収まるのを待つ
+  AP_HOLD,    // シャッター押下を保持
+  AP_POST,    // 撮影・保存の完了を待つ
+  AP_MOVE,    // 次角度へ移動中
+};
+
+constexpr uint32_t SHUTTER_HOLD_MS = 60;      // シャッター押下の保持時間
+constexpr uint32_t AUTO_MIN_MOVE_MS = 20;     // 移動完了判定前の最小待ち
+constexpr uint32_t AUTO_MAX_DELAY_MS = 20000;  // settle/post の上限
+
+AutoPhase autoPhase = AP_IDLE;
+int autoFrames = 0;            // 総撮影枚数（1周の分割数）
+int autoIndex = 0;            // 撮影済み枚数
+uint32_t autoSettleMs = 500;  // 停止後の整定待ち
+uint32_t autoPostMs = 1500;   // シャッター後の撮影・保存待ち
+uint32_t autoPhaseStart = 0;  // 現フェーズの開始時刻
+long autoTakenSteps = 0;      // 開始位置からの累積移動ステップ（ドリフト補正用）
 
 int32_t clampInt32(int32_t value, int32_t minValue, int32_t maxValue) {
   if (value < minValue) {
@@ -178,6 +202,100 @@ void moveSteps(int32_t signedSteps) {
   stepper->move(signedSteps);
 }
 
+void notifyStatus(bool force);
+
+void stopAutomation() {
+  autoPhase = AP_IDLE;
+  shutter.release();
+}
+
+void startAutomation(int frames, uint32_t settleMs, uint32_t postMs) {
+  if (stepper == nullptr || frames < 1) {
+    return;
+  }
+
+  if (!motorEnabled) {
+    motorEnabled = true;
+    stepper->enableOutputs();
+  }
+  if (stepper->isRunning()) {
+    stepper->forceStop();
+    delay(5);
+  }
+
+  jogSpeedHz = 0;
+  autoFrames = frames;
+  autoIndex = 0;
+  autoTakenSteps = 0;
+  autoSettleMs = clampInt32(settleMs, 0, AUTO_MAX_DELAY_MS);
+  autoPostMs = clampInt32(postMs, 0, AUTO_MAX_DELAY_MS);
+  applyMotionParams();
+
+  // 開始位置でまず整定してから1枚目を撮る
+  autoPhase = AP_SETTLE;
+  autoPhaseStart = millis();
+}
+
+void updateAutomation() {
+  if (autoPhase == AP_IDLE || stepper == nullptr) {
+    return;
+  }
+
+  const uint32_t now = millis();
+
+  switch (autoPhase) {
+    case AP_SETTLE:
+      if (now - autoPhaseStart >= autoSettleMs) {
+        shutter.pressVolumeUp();
+        autoPhaseStart = now;
+        autoPhase = AP_HOLD;
+      }
+      break;
+
+    case AP_HOLD:
+      if (now - autoPhaseStart >= SHUTTER_HOLD_MS) {
+        shutter.release();
+        autoIndex++;
+        autoPhaseStart = now;
+        autoPhase = AP_POST;
+      }
+      break;
+
+    case AP_POST:
+      if (now - autoPhaseStart >= autoPostMs) {
+        if (autoIndex >= autoFrames) {
+          autoPhase = AP_IDLE;  // 1周完了
+          notifyStatus(true);
+        } else {
+          // 1周（200 * microstep ステップ）を frames 等分。丸め誤差が
+          // 累積しないよう、毎回「累積目標との差分」を移動する。
+          const long stepsPerRev = 200L * static_cast<long>(microstepMode);
+          const long targetNow =
+              lround(static_cast<double>(stepsPerRev) * autoIndex / autoFrames);
+          const long delta = targetNow - autoTakenSteps;
+          autoTakenSteps = targetNow;
+          if (delta != 0) {
+            applyMotionParams();
+            stepper->move(delta);
+          }
+          autoPhaseStart = now;
+          autoPhase = AP_MOVE;
+        }
+      }
+      break;
+
+    case AP_MOVE:
+      if (now - autoPhaseStart >= AUTO_MIN_MOVE_MS && !stepper->isRunning()) {
+        autoPhaseStart = now;
+        autoPhase = AP_SETTLE;
+      }
+      break;
+
+    default:
+      break;
+  }
+}
+
 int readCsvInt(const String& command, int index, int defaultValue) {
   int start = 0;
   int part = 0;
@@ -232,7 +350,16 @@ void handleCommand(String command) {
       moveSteps(readCsvInt(command, 1, stepCount));
       break;
     }
+    case 'A': {
+      // A,frames,settleMs,postMs … 1周を frames 分割して自動撮影開始
+      const int frames = readCsvInt(command, 1, 0);
+      const uint32_t settleMs = static_cast<uint32_t>(readCsvInt(command, 2, autoSettleMs));
+      const uint32_t postMs = static_cast<uint32_t>(readCsvInt(command, 3, autoPostMs));
+      startAutomation(frames, settleMs, postMs);
+      break;
+    }
     case 'S': {
+      stopAutomation();
       jogSpeedHz = 0;
       stepper->forceStop();
       break;
@@ -242,6 +369,7 @@ void handleCommand(String command) {
       if (motorEnabled) {
         stepper->enableOutputs();
       } else {
+        stopAutomation();
         jogSpeedHz = 0;
         stepper->forceStop();
         delay(5);
@@ -259,7 +387,7 @@ void handleCommand(String command) {
       break;
     }
     default:
-      Serial.print("[BLE] Unknown command: ");
+      Serial.print("[CMD] Unknown command: ");
       Serial.println(command);
       break;
   }
@@ -276,72 +404,75 @@ String buildStatusJson() {
   json += "\"stepCount\":" + String(stepCount) + ",";
   json += "\"microstep\":" + String(microstepMode) + ",";
   json += "\"acceleration\":" + String(acceleration) + ",";
-  json += "\"enabled\":" + String(motorEnabled ? "true" : "false");
+  json += "\"enabled\":" + String(motorEnabled ? "true" : "false") + ",";
+  json += "\"hidReady\":" + String(shutter.isConnected() ? "true" : "false") + ",";
+  json += "\"auto\":" + String(autoPhase != AP_IDLE ? "true" : "false") + ",";
+  json += "\"frame\":" + String(autoIndex) + ",";
+  json += "\"frames\":" + String(autoFrames);
   json += "}";
   return json;
 }
 
+// ステータスは USB シリアルに1行JSONで出す。PC側UI(Web Serial)がこれを読む。
 void notifyStatus(bool force = false) {
-  if (!bleConnected || statusCharacteristic == nullptr) {
-    return;
-  }
-
   const uint32_t now = millis();
   if (!force && now - lastStatusMs < STATUS_INTERVAL_MS) {
     return;
   }
 
   lastStatusMs = now;
-  const String status = buildStatusJson();
-  statusCharacteristic->setValue(status.c_str());
-  statusCharacteristic->notify();
+  Serial.println(buildStatusJson());
 }
 
-class ServerCallbacks : public BLEServerCallbacks {
+// BLE は iPhone への HID シャッター専用。接続してくるセントラルは iPhone だけ
+// なので、onConnect/onDisconnect はそのまま「シャッター相手の状態」を表す。
+class HidServerCallbacks : public BLEServerCallbacks {
   void onConnect(BLEServer*) override {
-    bleConnected = true;
+    shutter.handleConnect();
     notifyStatus(true);
   }
 
   void onDisconnect(BLEServer* server) override {
-    bleConnected = false;
-    startJog(0);
-    server->startAdvertising();
-  }
-};
-
-class CommandCallbacks : public BLECharacteristicCallbacks {
-  void onWrite(BLECharacteristic* characteristic) override {
-    const std::string value = characteristic->getValue();
-    handleCommand(String(value.c_str()));
+    shutter.handleDisconnect();
+    server->startAdvertising();  // 再接続を受け付ける
+    // 制御は USB シリアル側なので、iPhone が切れても自動撮影は止めない
+    // （モーターは回り続け、シャッターだけ空振りになる）。
     notifyStatus(true);
   }
 };
 
-void setupBle() {
+// USB シリアルから1行ずつコマンドを受け取る（改行区切り）。
+String serialLine;
+
+void pollSerial() {
+  while (Serial.available() > 0) {
+    const char c = static_cast<char>(Serial.read());
+    if (c == '\n' || c == '\r') {
+      if (serialLine.length() > 0) {
+        handleCommand(serialLine);
+        serialLine = "";
+        notifyStatus(true);
+      }
+    } else {
+      serialLine += c;
+      if (serialLine.length() > 128) {  // 暴走・化け対策
+        serialLine = "";
+      }
+    }
+  }
+}
+
+void setupHid() {
   BLEDevice::init(DEVICE_NAME);
   BLEDevice::setMTU(185);
 
   BLEServer* server = BLEDevice::createServer();
-  server->setCallbacks(new ServerCallbacks());
+  server->setCallbacks(new HidServerCallbacks());
 
-  BLEService* service = server->createService(SERVICE_UUID);
-
-  BLECharacteristic* commandCharacteristic = service->createCharacteristic(
-      COMMAND_UUID,
-      BLECharacteristic::PROPERTY_WRITE | BLECharacteristic::PROPERTY_WRITE_NR);
-  commandCharacteristic->setCallbacks(new CommandCallbacks());
-
-  statusCharacteristic = service->createCharacteristic(
-      STATUS_UUID,
-      BLECharacteristic::PROPERTY_READ | BLECharacteristic::PROPERTY_NOTIFY);
-  statusCharacteristic->addDescriptor(new BLE2902());
-  statusCharacteristic->setValue(buildStatusJson().c_str());
-
-  service->start();
+  // HID サービス＋アドバタイズ設定は shutter.begin が行う
+  shutter.begin(server);
 
   BLEAdvertising* advertising = BLEDevice::getAdvertising();
-  advertising->addServiceUUID(SERVICE_UUID);
   advertising->setScanResponse(true);
   advertising->setMinPreferred(0x06);
   advertising->setMinPreferred(0x12);
@@ -373,10 +504,12 @@ void setup() {
     applyMotionParams();
   }
 
-  setupBle();
-  Serial.println("[SYSTEM] BLE motor controller started");
+  setupHid();
+  Serial.println("[SYSTEM] Turntable controller started (USB serial + BLE HID shutter)");
 }
 
 void loop() {
+  pollSerial();
+  updateAutomation();
   notifyStatus();
 }

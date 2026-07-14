@@ -1,45 +1,47 @@
-# XIAO ESP32S3 BLE Stepper Controller
+# XIAO ESP32S3 Turntable Controller (USB Serial + BLE HID Shutter)
 
-ESP32をBLEペリフェラルにして、Web Bluetooth対応ブラウザからA4988経由のステップモータを制御するサンプルです。
+回転台フォトグラメトリ用のコントローラです。**制御はPCからUSBシリアル**で行い、
+**シャッターはESP32からBLE HID（音量+キー）でiPhoneへ**送ります。
+「回す→止まる→整定待ち→シャッター→撮影待ち」を自動で1周ぶん繰り返します。
+
+- PC ──USB(シリアル)──> ESP32 ──BLE HID(音量+)──> iPhone(カメラ)
+
+BLEはiPhoneへのシャッター送信専用（HID 1役）です。カスタムGATTサービスは廃止し、
+モーター制御コマンドはUSBシリアルの1行テキストで受け取ります。二役BLEを避けることで、
+`BLEDevice::createServer()` の二重生成でGATTサーバーが壊れる問題（Arduino ESP32 2.x）を回避しています。
 
 ## 構成
 
-- `src/main.cpp`: XIAO ESP32S3向けPlatformIOファームウェア
-- `web/index.html`: GitHub PagesなどHTTPS上で動くWeb Bluetoothアプリ
+- `src/main.cpp`: ファームウェア（USBシリアル受信＋自動撮影ステートマシン）
+- `lib/HidShutter/`: 既存BLEサーバーに同居する最小のBLE HID（音量+のみ）
+- `web/index.html`: Web Serialで動くPC用コントロールUI（Chrome / Edge デスクトップ版）
 - `index.html`: GitHub Pagesのルートから`web/`へ移動するための入口
 
-## BLE仕様
+## iPhone側の準備
 
-Device name:
+1. 「設定 > Bluetooth」で `XIAO Turntable`（DevKitは `ESP32 Turntable`）をキーボードとしてペアリング
+2. 撮影時は標準カメラ（またはKIRI）を前面に出しておく（音量+でシャッターが切れる）
 
-- XIAO ESP32S3: `XIAO BLE Motor`
-- ESP32 DevKit: `ESP32 BLE Motor`
-
-Service UUID: `7b7f0001-9b6d-4f8b-8c5d-9bb6f6f68c01`
-
-Characteristics:
-
-- Command Write: `7b7f0002-9b6d-4f8b-8c5d-9bb6f6f68c01`
-- Status Notify: `7b7f0003-9b6d-4f8b-8c5d-9bb6f6f68c01`
-
-コマンドはASCIIテキストです。
+## コマンド仕様（USBシリアル / 115200bps / 改行区切りのASCII）
 
 ```text
-C,<microstep>,<d_us>,<steps>,<accel>
-V,<signed_speed_hz>,<accel>
-M,<signed_steps>
-S
-E,<0|1>
-R
+C,<microstep>,<d_us>,<steps>,<accel>   設定変更
+V,<signed_speed_hz>,<accel>            ジョグ（正=CW / 負=CCW / 0=減速停止）
+M,<signed_steps>                       指定ステップ移動
+A,<frames>,<settle_ms>,<post_ms>       自動撮影開始（1周を frames 等分）
+S                                      停止（自動撮影も中断）
+E,<0|1>                                励磁 OFF/ON
+R                                      現在位置を0にリセット
 ```
 
-`V`はジョグ/速度指令です。正値がCW、負値がCCW、0が減速停止です。
+自動撮影の1周は `200 × microstep` ステップを `frames` で等分します（丸め誤差は累積しないよう補正）。
+ステータスはESP32から1行JSONでシリアルに流れ、UIがそれを読んで表示します。
 
-## Web Bluetooth
+## Web Serial UI
 
-Web BluetoothはHTTPSまたはlocalhost上でのみ動作します。GitHub Pagesに公開したURLへChromeまたはEdgeでアクセスしてください。iOS SafariはWeb Bluetoothに対応していません。
-
-Webアプリの速度入力は `steps/s` に統一しています。ファームウェア内部の `d_us` は、Webアプリ側で `d_us = 500000 / steps_per_second` として自動換算して送信します。
+Web SerialはHTTPSまたはlocalhost上のChrome / Edge（デスクトップ版）で動作します。
+GitHub Pagesに公開したURLへアクセスし、「USB接続」でESP32のシリアルポートを選んでください。
+速度入力は `steps/s` に統一（内部 `d_us = 500000 / steps_per_second` で自動換算）。
 
 ## ビルド
 

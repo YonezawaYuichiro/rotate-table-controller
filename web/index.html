@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>XIAO BLE Motor Controller</title>
+    <title>Turntable Controller (USB Serial)</title>
     <style>
       :root {
         color-scheme: light;
@@ -75,6 +75,11 @@
         padding: 14px;
       }
 
+      section.highlight {
+        border-color: color-mix(in srgb, var(--accent), white 40%);
+        background: color-mix(in srgb, var(--accent), white 94%);
+      }
+
       .span-12 {
         grid-column: span 12;
       }
@@ -122,6 +127,10 @@
         display: grid;
         grid-template-columns: repeat(2, minmax(0, 1fr));
         gap: 12px;
+      }
+
+      .form-grid.cols-3 {
+        grid-template-columns: repeat(3, minmax(0, 1fr));
       }
 
       label {
@@ -183,6 +192,10 @@
         margin-top: 12px;
       }
 
+      .button-row.cols-2 {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+
       .jog-pad {
         display: grid;
         grid-template-columns: 1fr 1fr;
@@ -194,15 +207,18 @@
         font-size: 22px;
       }
 
-      .full {
-        grid-column: 1 / -1;
-      }
-
       .message {
         min-height: 22px;
         margin-top: 10px;
         color: var(--muted);
         font-size: 13px;
+      }
+
+      .hint {
+        margin: 8px 0 0;
+        color: var(--muted);
+        font-size: 12px;
+        line-height: 1.5;
       }
 
       @media (max-width: 760px) {
@@ -218,6 +234,7 @@
 
         .metrics,
         .form-grid,
+        .form-grid.cols-3,
         .button-row {
           grid-template-columns: 1fr 1fr;
         }
@@ -226,6 +243,7 @@
       @media (max-width: 520px) {
         .metrics,
         .form-grid,
+        .form-grid.cols-3,
         .button-row,
         .jog-pad {
           grid-template-columns: 1fr;
@@ -236,18 +254,51 @@
   <body>
     <main>
       <header>
-        <h1>XIAO BLE Motor Controller</h1>
+        <h1>Turntable Controller</h1>
         <div id="connectionState" class="status-pill">未接続</div>
       </header>
 
       <div class="grid">
         <section class="span-12">
           <div class="button-row">
-            <button id="connectButton" class="accent">BLE接続</button>
+            <button id="connectButton" class="accent">USB接続</button>
             <button id="disconnectButton" class="secondary" disabled>切断</button>
             <button id="stopButton" class="danger" disabled>緊急停止</button>
           </div>
           <div id="message" class="message"></div>
+          <p class="hint">
+            制御はこのPCからUSBシリアルで行います（Chrome / Edge のデスクトップ版が必要）。
+            シャッターはESP32からBLE HID（音量+）でiPhoneへ送られます。
+            iPhone側は事前に「設定 &gt; Bluetooth」で <b>XIAO Turntable</b> をキーボードとしてペアリングし、
+            撮影時は標準カメラ（またはKIRI）を前面に出しておいてください。
+          </p>
+        </section>
+
+        <section class="span-12 highlight">
+          <h2>自動撮影</h2>
+          <div class="form-grid cols-3">
+            <label>
+              分割数（1周の枚数）
+              <input id="autoFrames" type="number" min="1" max="3600" value="36">
+            </label>
+            <label>
+              整定待ち settle (ms)
+              <input id="autoSettle" type="number" min="0" max="20000" value="500">
+            </label>
+            <label>
+              撮影待ち post (ms)
+              <input id="autoPost" type="number" min="0" max="20000" value="1500">
+            </label>
+          </div>
+          <div class="button-row cols-2">
+            <button id="autoStartButton" class="accent" disabled>自動撮影スタート</button>
+            <button id="autoStopButton" class="danger" disabled>自動撮影ストップ</button>
+          </div>
+          <p class="hint">
+            「回す→止まる→settle待ち→シャッター→post待ち」を分割数ぶん繰り返し、1周で終了します。
+            settle=振動が収まるまでの待ち、post=撮影・保存が終わるまでの待ちです。
+            マイクロステップ設定（下の「設定」）を基準に1周＝200×マイクロステップ を等分します。
+          </p>
         </section>
 
         <section class="span-12">
@@ -255,14 +306,14 @@
           <div class="metrics">
             <div class="metric"><span>位置</span><strong id="pos">-</strong></div>
             <div class="metric"><span>動作</span><strong id="run">-</strong></div>
-            <div class="metric"><span>方向</span><strong id="dir">-</strong></div>
             <div class="metric"><span>速度 steps/s</span><strong id="speed">-</strong></div>
-            <div class="metric"><span>実回転速度</span><strong id="liveSpeed">-</strong></div>
+            <div class="metric"><span>HID(iPhone)</span><strong id="hid">-</strong></div>
+            <div class="metric"><span>自動撮影</span><strong id="auto">-</strong></div>
           </div>
         </section>
 
         <section class="span-7">
-          <h2>ジョグ</h2>
+          <h2>ジョグ（手動）</h2>
           <div class="form-grid">
             <label class="full">
               速度: <span><strong id="jogSpeedLabel">500</strong> steps/s</span>
@@ -315,25 +366,20 @@
     </main>
 
     <script>
-      const SERVICE_UUID = '7b7f0001-9b6d-4f8b-8c5d-9bb6f6f68c01';
-      const COMMAND_UUID = '7b7f0002-9b6d-4f8b-8c5d-9bb6f6f68c01';
-      const STATUS_UUID = '7b7f0003-9b6d-4f8b-8c5d-9bb6f6f68c01';
-
       const encoder = new TextEncoder();
-      const decoder = new TextDecoder();
-      let device = null;
-      let commandCharacteristic = null;
-      let statusCharacteristic = null;
+      let port = null;
+      let reader = null;
+      let writer = null;
       let jogTimer = null;
       let activeJogDirection = 0;
       let configDirty = false;
       let applyingConfig = false;
-      let lastRealtimeSample = null;
 
       const $ = (id) => document.getElementById(id);
       const commandButtons = [
         'stopButton', 'ccwJog', 'cwJog', 'moveCcwButton', 'singleButton', 'moveCwButton',
-        'applyButton', 'enableButton', 'disableButton', 'resetButton'
+        'applyButton', 'enableButton', 'disableButton', 'resetButton',
+        'autoStartButton', 'autoStopButton'
       ];
 
       function setMessage(text) {
@@ -341,26 +387,58 @@
       }
 
       function setConnected(connected) {
-        $('connectionState').textContent = connected ? '接続中' : '未接続';
+        $('connectionState').textContent = connected ? '接続中 (USB)' : '未接続';
         $('connectionState').classList.toggle('connected', connected);
         $('connectButton').disabled = connected;
         $('disconnectButton').disabled = !connected;
         commandButtons.forEach((id) => $(id).disabled = !connected);
       }
 
+      // ---- シリアル送受信 ------------------------------------------------
       async function writeCommand(command) {
-        if (!commandCharacteristic) {
+        if (!writer) {
           return;
         }
+        await writer.write(encoder.encode(command + '\n'));
+      }
 
-        const payload = encoder.encode(command);
-        if (commandCharacteristic.writeValueWithoutResponse) {
-          await commandCharacteristic.writeValueWithoutResponse(payload);
-        } else {
-          await commandCharacteristic.writeValue(payload);
+      async function readLoop() {
+        const decoder = new TextDecoder();
+        let buffer = '';
+        try {
+          while (port && port.readable) {
+            reader = port.readable.getReader();
+            try {
+              while (true) {
+                const { value, done } = await reader.read();
+                if (done) {
+                  break;
+                }
+                buffer += decoder.decode(value, { stream: true });
+                let index;
+                while ((index = buffer.indexOf('\n')) >= 0) {
+                  const line = buffer.slice(0, index).trim();
+                  buffer = buffer.slice(index + 1);
+                  if (line.startsWith('{')) {
+                    try {
+                      updateStatus(JSON.parse(line));
+                    } catch (error) {
+                      /* JSON以外の行（[SYSTEM]など）は無視 */
+                    }
+                  }
+                }
+              }
+            } finally {
+              reader.releaseLock();
+              reader = null;
+            }
+          }
+        } catch (error) {
+          /* 切断時にread()が例外を投げることがある */
         }
       }
 
+      // ---- 設定・ジョグ（コマンド文字列は従来と同一） --------------------
       function currentAccel() {
         return Math.max(1, Math.min(50000, Number($('accel').value || 1)));
       }
@@ -403,53 +481,16 @@
         if (position === undefined || position === null) {
           return '-';
         }
-
         const rawPosition = Number(position);
         const denominator = Math.max(1, Number(microstep || 1));
-
         if (!Number.isFinite(rawPosition) || !Number.isFinite(denominator) || denominator <= 1) {
           return String(position);
         }
-
         const sign = rawPosition < 0 ? '-' : '';
         const absolutePosition = Math.abs(rawPosition);
         const wholeSteps = Math.trunc(absolutePosition / denominator);
         const microstepRemainder = absolutePosition % denominator;
-
         return `${sign}${wholeSteps}.${microstepRemainder}/${denominator}`;
-      }
-
-      function formatRealtimeSpeed(status) {
-        const position = Number(status.position);
-        const microstep = Math.max(1, Number(status.microstep || 1));
-        const now = performance.now();
-
-        if (!Number.isFinite(position) || !Number.isFinite(microstep)) {
-          lastRealtimeSample = null;
-          return '-';
-        }
-
-        if (!lastRealtimeSample) {
-          lastRealtimeSample = { position, microstep, time: now };
-          return '-';
-        }
-
-        const elapsedSeconds = (now - lastRealtimeSample.time) / 1000;
-        const deltaMicrosteps = position - lastRealtimeSample.position;
-        lastRealtimeSample = { position, microstep, time: now };
-
-        if (elapsedSeconds <= 0) {
-          return '-';
-        }
-
-        const degreesPerSecond = (deltaMicrosteps / microstep) * 1.8 / elapsedSeconds;
-        const rpm = degreesPerSecond / 360 * 60;
-
-        if (Math.abs(degreesPerSecond) < 0.005) {
-          return '0.00 deg/s';
-        }
-
-        return `${degreesPerSecond.toFixed(2)} deg/s ${rpm.toFixed(3)} rpm`;
       }
 
       async function sendJog() {
@@ -480,9 +521,16 @@
       function updateStatus(status) {
         $('pos').textContent = formatPosition(status.position, status.microstep);
         $('run').textContent = status.running ? 'RUNNING' : 'STOPPED';
-        $('dir').textContent = status.direction ?? '-';
         $('speed').textContent = status.speedHz ?? '-';
-        $('liveSpeed').textContent = formatRealtimeSpeed(status);
+        $('hid').textContent = status.hidReady ? 'READY' : '未接続';
+
+        if (status.auto) {
+          const frames = status.frames ?? 0;
+          const frame = status.frame ?? 0;
+          $('auto').textContent = `${frame}/${frames}`;
+        } else {
+          $('auto').textContent = '停止中';
+        }
 
         if (applyingConfig) {
           const applied =
@@ -490,7 +538,6 @@
             speedToD(currentSpeed()) === Number(status.d) &&
             currentSteps() === Number(status.stepCount) &&
             Number($('accel').value) === Number(status.acceleration);
-
           if (applied) {
             applyingConfig = false;
             configDirty = false;
@@ -506,59 +553,44 @@
         }
       }
 
-      function handleStatus(event) {
-        try {
-          const text = decoder.decode(event.target.value);
-          updateStatus(JSON.parse(text));
-        } catch (error) {
-          console.error(error);
-        }
-      }
-
-      async function connectBle() {
-        if (!navigator.bluetooth) {
-          setMessage('このブラウザはWeb Bluetoothに対応していません。ChromeまたはEdgeを使用してください。');
+      // ---- 接続 ----------------------------------------------------------
+      async function connectSerial() {
+        if (!('serial' in navigator)) {
+          setMessage('このブラウザはWeb Serialに対応していません。デスクトップ版のChromeまたはEdgeを使用してください。');
           return;
         }
-
-        device = await navigator.bluetooth.requestDevice({
-          filters: [{ services: [SERVICE_UUID] }],
-          optionalServices: [SERVICE_UUID]
-        });
-        device.addEventListener('gattserverdisconnected', onDisconnected);
-
-        const server = await device.gatt.connect();
-        const service = await server.getPrimaryService(SERVICE_UUID);
-        commandCharacteristic = await service.getCharacteristic(COMMAND_UUID);
-        statusCharacteristic = await service.getCharacteristic(STATUS_UUID);
-        statusCharacteristic.addEventListener('characteristicvaluechanged', handleStatus);
-        await statusCharacteristic.startNotifications();
-
-        const initial = await statusCharacteristic.readValue();
-        updateStatus(JSON.parse(decoder.decode(initial)));
+        port = await navigator.serial.requestPort();
+        await port.open({ baudRate: 115200 });
+        writer = port.writable.getWriter();
         configDirty = false;
         applyingConfig = false;
-        lastRealtimeSample = null;
         setConnected(true);
-        setMessage('BLE接続しました。');
+        setMessage('USB接続しました。');
+        readLoop();
       }
 
-      function onDisconnected() {
-        stopJog().catch(() => {});
-        commandCharacteristic = null;
-        statusCharacteristic = null;
-        lastRealtimeSample = null;
+      async function disconnectSerial() {
+        await stopJog().catch(() => {});
+        try {
+          if (reader) {
+            await reader.cancel();
+          }
+        } catch (error) { /* noop */ }
+        try {
+          if (writer) {
+            writer.releaseLock();
+          }
+        } catch (error) { /* noop */ }
+        try {
+          if (port) {
+            await port.close();
+          }
+        } catch (error) { /* noop */ }
+        port = null;
+        reader = null;
+        writer = null;
         setConnected(false);
-        setMessage('BLE接続が切断されました。');
-      }
-
-      async function disconnectBle() {
-        await stopJog();
-        if (device?.gatt?.connected) {
-          device.gatt.disconnect();
-        } else {
-          onDisconnected();
-        }
+        setMessage('USB接続を切断しました。');
       }
 
       function bindHoldButton(id, direction) {
@@ -577,12 +609,28 @@
         button.addEventListener('pointerleave', stop);
       }
 
-      $('connectButton').addEventListener('click', () => connectBle().catch((error) => setMessage(error.message)));
-      $('disconnectButton').addEventListener('click', () => disconnectBle().catch(console.error));
+      // ---- イベント配線 --------------------------------------------------
+      $('connectButton').addEventListener('click', () => connectSerial().catch((error) => setMessage(error.message)));
+      $('disconnectButton').addEventListener('click', () => disconnectSerial().catch(console.error));
       $('stopButton').addEventListener('click', async () => {
         await stopJog();
         await writeCommand('S');
       });
+
+      $('autoStartButton').addEventListener('click', async () => {
+        try {
+          await sendConfig();  // マイクロステップ等を先に反映
+          const frames = Math.max(1, Math.min(3600, Number($('autoFrames').value || 36)));
+          const settle = Math.max(0, Math.min(20000, Number($('autoSettle').value || 0)));
+          const post = Math.max(0, Math.min(20000, Number($('autoPost').value || 0)));
+          await writeCommand(`A,${frames},${settle},${post}`);
+          setMessage(`自動撮影開始: ${frames}枚 / settle ${settle}ms / post ${post}ms`);
+        } catch (error) {
+          setMessage(error.message);
+        }
+      });
+      $('autoStopButton').addEventListener('click', () => writeCommand('S').catch(console.error));
+
       $('applyButton').addEventListener('click', () => {
         applyingConfig = true;
         sendConfig().catch((error) => {
@@ -592,10 +640,7 @@
       });
       $('enableButton').addEventListener('click', () => writeCommand('E,1').catch(console.error));
       $('disableButton').addEventListener('click', () => writeCommand('E,0').catch(console.error));
-      $('resetButton').addEventListener('click', () => {
-        lastRealtimeSample = null;
-        writeCommand('R').catch(console.error);
-      });
+      $('resetButton').addEventListener('click', () => writeCommand('R').catch(console.error));
       $('moveCcwButton').addEventListener('click', async () => {
         try {
           await sendConfig();
